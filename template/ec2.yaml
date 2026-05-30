@@ -1,5 +1,13 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: EC2 creada desde GitHub Actions
+Description: EC2 desplegada desde GitHub Actions con configuracion base lista para produccion
+
+Parameters:
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Ambiente de despliegue
 
 Resources:
 
@@ -13,8 +21,75 @@ Resources:
       Tags:
         - Key: Name
           Value: EC2-GitHubActions
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          exec > >(tee /var/log/userdata.log | logger -t userdata) 2>&1
+
+          echo "============================================"
+          echo " Iniciando configuracion de instancia EC2"
+          echo " Fecha: $(date)"
+          echo " Ambiente: ${Environment}"
+          echo "============================================"
+
+          # ── Actualizar sistema ────────────────────────
+          echo "[1/5] Actualizando paquetes del sistema..."
+          dnf update -y --quiet
+
+          # ── Instalar utilidades base ──────────────────
+          echo "[2/5] Instalando utilidades..."
+          dnf install -y \
+            git \
+            curl \
+            wget \
+            unzip \
+            jq \
+            htop \
+            amazon-cloudwatch-agent
+
+          # ── Configurar zona horaria ───────────────────
+          echo "[3/5] Configurando zona horaria (UTC)..."
+          timedatectl set-timezone UTC
+
+          # ── Habilitar y arrancar SSM Agent ────────────
+          echo "[4/5] Habilitando SSM Agent..."
+          systemctl enable amazon-ssm-agent
+          systemctl start  amazon-ssm-agent
+
+          # ── Mensaje de bienvenida en MOTD ─────────────
+          echo "[5/5] Configurando MOTD..."
+          cat > /etc/motd << 'MOTD'
+
+            ┌─────────────────────────────────────────┐
+            │          EC2 · GitHub Actions            │
+            │         Ambiente: ${Environment}         │
+            └─────────────────────────────────────────┘
+
+          MOTD
+
+          echo "============================================"
+          echo " Configuracion completada exitosamente"
+          echo " Fecha: $(date)"
+          echo "============================================"
+
+          # Señal de exito para cfn-signal (si se usa CreationPolicy)
+          /opt/aws/bin/cfn-signal -e $? \
+            --stack  ${AWS::StackName} \
+            --region ${AWS::Region} \
+            --resource MyEC2 || true
 
 Outputs:
 
   InstanceId:
+    Description: ID de la instancia EC2
     Value: !Ref MyEC2
+
+  AvailabilityZone:
+    Description: Zona de disponibilidad
+    Value: !GetAtt MyEC2.AvailabilityZone
